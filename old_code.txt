@@ -1,0 +1,192 @@
+
+import numpy as np
+from numpy import asarray
+import os 
+import glob
+from PIL import Image
+import secrets
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Input
+from tensorflow.keras.layers import Conv2D
+from tensorflow.keras.layers import Dense
+from tensorflow.keras.layers import Dropout
+from tensorflow.keras.layers import GlobalAveragePooling2D
+from tensorflow.keras.layers import MaxPooling2D
+from tensorflow.keras.layers import Lambda
+##from keras.layers import Dense, Conv2D, Input, MaxPool2D, Flatten, merge
+import tensorflow.keras.backend as K
+import tensorflow as tf
+
+base = 'D:\Projects\signature_forged_detection\main'
+
+classes = os.listdir(base)
+
+images_pair = []
+labels_pair = []
+
+img_shape = (28, 28,1)
+batch_size = 2
+
+
+class siamese_loader:
+    def __init__(self, X):
+        self.X = X
+        self.n_classes, self.n_examples, self.w, self.h = X.shape
+        self.batch_size, batch_size
+
+    def make_pairs(self, batch_size):
+##        images_pair = tf.placeholder(tf.float32, shape=(None, None, None, None))
+        labels_pair = [np.zeros((batch_size, self.h, self.w,1))]
+        images_pair = []
+    ##    X = np.empty((batch_size, 20, 2), dtype=np.float32)
+        for i in range(len(classes)):
+
+            real_forged = os.path.join(base, classes[i])
+            real_images =os.path.join(real_forged, "real")
+            forged_images = os.path.join(real_forged, 'forged')
+            for real in glob.glob(os.path.join(real_images, '*.png')):
+                
+                image = Image.open(real)
+                image = asarray(image)
+                
+                image = image.astype('float32')
+                image = image / 255.0
+                
+                image = np.expand_dims(image, axis=-1)
+
+                image = np.expand_dims(image, axis=0)
+
+                random_img = glob.glob(os.path.join(real_images, '*.png'))
+                real_random_image = secrets.choice(random_img)
+                X = Image.open(real_random_image)
+                X = asarray(rand_img)
+                X = rand_img.astype('float32')
+                X = rand_img / 255.0
+                    
+                X = np.expand_dims(rand_img, axis=-1)
+
+                X = np.expand_dims(rand_img, axis=0)
+
+                for i in range(batch_size):
+                    images_pair[0][i, :, :, :] = X
+##                images_pair.append([image, rand_img])
+                    labels_pair.append([1])
+                    
+                
+        ##    for real in glob.glob(os.path.join(real_images, '*.png')):
+        ##
+        ##        image = Image.open(real)
+        ##        image = asarray(image)
+        ##
+        ##        image = image.astype('float32')
+
+                random_forged_img = glob.glob(os.path.join(forged_images, '*.png'))
+                forged_img_rand = secrets.choice(random_forged_img)
+                rand_img_forged = Image.open(forged_img_rand)
+                rand_img_forged = asarray(rand_img_forged)
+                rand_img_forged = rand_img_forged.astype('float32')
+                rand_img_forged /= 255.0
+
+                rand_img_forged = np.expand_dims(rand_img_forged, axis = -1)
+
+                
+                images_pair.append([image, rand_img_forged])
+                labels_pair.append([0])
+            
+        return (np.asarray(images_pair), np.asarray(labels_pair))
+
+
+def build_siamese_model(inputshape):
+
+    inputs = Input(inputshape)
+
+##    x = Conv2D(64, (10,10), activation = 'relu')(inputs)
+##    x = MaxPool2D(2,2)(x)
+##
+##    x = Conv2D(128, (7,7), activation = 'relu')(x)
+##    x = MaxPool2D((2,2))(x)
+##
+##    x = Conv2D(128, (4,4), activation = 'relu')(x)
+##    x = MaxPool2D((2,2))(x)
+##
+##    x = Conv2D(256, (4,4), actication = 'relu')(x)
+##    x = Flatten()(x)
+##    x = Dense(4096, activation = 'sigmoid')(x)
+
+
+    x = Conv2D(64, (2, 2), padding="same", activation="relu")(inputs)
+    x = MaxPooling2D(pool_size=(2, 2))(x)
+    x = Dropout(0.3)(x)
+	# second set of CONV => RELU => POOL => DROPOUT layers
+    x = Conv2D(64, (2, 2), padding="same", activation="relu")(x)
+    x = MaxPooling2D(pool_size=2)(x)
+    x = Dropout(0.3)(x)
+
+    pooledOutput = GlobalAveragePooling2D()(x)
+    outputs = Dense(48)(pooledOutput)
+	# build the model
+    model = Model(inputs, outputs)
+    # return the model to the calling function
+    print('haha')
+    return model
+
+##    return Model(inputs, x)
+
+
+
+def euclidean_distance(vectors):
+    (feat_img1, feat_img2) = vectors
+
+    square_sum = K.sum(K.square(feat_img1 -feat_img2), axis=1, keepdims=True)
+
+    return K.sqrt(K.maximum(square_sum, K.epsilon()))
+        
+X = []
+X = asarray(X)
+
+
+(x_train, label_train) = siamese_loader.make_pairs(X)
+
+label = np.empty((batch_size, 20, 1),dtype = np.float32)
+image_b = np.empty((batch_size, 20, 1),dtype = np.float32)
+
+
+
+image_a = x_train[:, 0]
+print('left')
+print(image_a.shape)
+##image_a = image_a.reshape(batch_size, 20, 1, 1)
+##image_b = x_train[:, 1]
+##image_b = image_b.reshape(batch_size, 20, 1, 1)
+
+img1 = Input(shape = img_shape)
+img2 = Input(shape = img_shape)
+
+feature_extractor = build_siamese_model(img_shape)
+
+feat_img1 = feature_extractor(img1)
+feat_img2 = feature_extractor(img2)
+
+distance = Lambda(euclidean_distance)([feat_img1, feat_img2])
+outputs = Dense(1, activation='sigmoid')(distance)
+model = Model(inputs= [img1, img2], outputs= outputs)
+
+
+model.compile(loss= 'binary_crossentropy', optimizer='adam', metrics=['accuracy'])
+
+print(x_train[:, 0].shape)
+
+print(label_train[:].shape)
+
+label = label_train[:]
+image = np.expand_dims(label, axis=0)
+
+
+
+#x_train = x_train.reshape(batch_size, 20,2,1)
+#
+history = model.fit([x_train[:, 0], x_train[:, 1]], label_train[:],
+                  batch_size = batch_size , epochs= 100)
+
+model.save('D:/Projects/signature_forged_detection/siamese_model')
+
