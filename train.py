@@ -1,35 +1,46 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Fri Apr 16 14:39:55 2021
+
+@author: Aditya
+"""
+
 
 import numpy as np
 ##from numpy import asarray
 import os 
 import glob
-##from PIL import Image
 ##import secrets
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Input
 from tensorflow.keras.layers import Conv2D
 from tensorflow.keras.layers import Dense
 from tensorflow.keras.layers import Dropout
-from tensorflow.keras.layers import GlobalAveragePooling2D
 from tensorflow.keras.layers import MaxPooling2D
 from tensorflow.keras.layers import Lambda
 from tensorflow.keras.layers import Flatten
 # from keras.layers import Dense, Conv2D, Input, MaxPool2D, Flatten, merge
 import tensorflow.keras.backend as K
-import tensorflow as tf
 import cv2
-import random
-import secrets 
+from keras.regularizers import l2
+from keras.optimizers import Adam, RMSprop
+import pandas as pd
+from keras.models import Sequential
+from keras.layers import Conv2D, ZeroPadding2D, Activation, Input, concatenate, Dropout
+from keras.models import Model
+
+from keras.layers.normalization import BatchNormalization
+
+from keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
 
 
-
-base = '/content/main'
+base = '/content/drive/MyDrive/main'
 
 classes = os.listdir(base)
 
 ##images = glob.glob(base, '*.png')
 
-images = glob.glob('/content/main/**/*.png',  
+images = glob.glob('/content/drive/MyDrive/main/**/*.png',  
                    recursive = True) 
 
 print('images')
@@ -40,7 +51,7 @@ print(len(images))
 
 real_images = []
 forged_images = []
-image_shape = (120,120, 1)
+img_h, img_w = 150, 200
 labels = []
 img_shape = 28
 real_list = np.empty(shape=(2,5), dtype= object) 
@@ -52,129 +63,141 @@ img_shape = (28, 28,1)
      
 
 
-def build_siamese_model(inputshape):
-
-    inputs = Input(inputshape)
-    x = Conv2D(50, (5,5), activation="relu")(inputs)
-    x = MaxPooling2D()(x)
+def build_siamese_model(input_shape):
+  
+  model = Sequential()
+  
+  model.add(Conv2D(96, kernel_size=(11, 11), activation='relu', name='conv1_1', strides=4, input_shape= input_shape, 
+                        kernel_initializer='glorot_uniform'))
+  model.add(BatchNormalization(epsilon=1e-06, axis=1, momentum=0.9))
+  model.add(MaxPooling2D((3,3), strides=(2, 2)))    
+  model.add(ZeroPadding2D((2, 2)))
     
-	
-    x = Conv2D(100, (3, 3), activation="relu")(x)
-    x = MaxPooling2D()(x)
+  model.add(Conv2D(256, kernel_size=(5, 5), activation='relu', name='conv2_1', strides=1, kernel_initializer='glorot_uniform'))
+  model.add(BatchNormalization(epsilon=1e-06, axis=1, momentum=0.9))
+  model.add(MaxPooling2D((3,3), strides=(2, 2)))
+  model.add(Dropout(0.3))# added extra
+  model.add(ZeroPadding2D((1, 1)))
     
-    x = Conv2D(100, (3, 3), activation="relu")(x)
+  model.add(Conv2D(384, kernel_size=(3, 3), activation='relu', name='conv3_1', strides=1, kernel_initializer='glorot_uniform'))
+  model.add(ZeroPadding2D((1, 1)))
     
-    x = Flatten()(x)
-    outputs = Dense(2048, activation='sigmoid')(x)
+  model.add(Conv2D(256, kernel_size=(3, 3), activation='relu', name='conv3_2', strides=1, kernel_initializer='glorot_uniform'))    
+  model.add(MaxPooling2D((3,3), strides=(2, 2)))
+  model.add(Dropout(0.3))# added extra
+  model.add(Flatten(name='flatten'))
+  model.add(Dense(1024, kernel_regularizer=l2(0.0005), activation='relu', kernel_initializer='glorot_uniform'))
+  model.add(Dropout(0.5))
     
-
-	# build the model
-    model = Model(inputs, outputs)
-    # return the model to the calling function
-    print('haha')
-    return model
-
+  model.add(Dense(256, kernel_regularizer=l2(0.0005), activation='relu', kernel_initializer='glorot_uniform')) # softmax changed to relu
+    
+  return model
 
 def euclidean_distance(vectors):
 	# unpack the vectors into separate lists
-	(featsA, featsB) = vectors
+	featsA, featsB = vectors
 	# compute the sum of squared distances between the vectors
-	sumSquared = K.sum(K.square(featsA - featsB), axis=1,
-		keepdims=True)
-	# return the euclidean distance between the vectors
-	return K.sqrt(K.maximum(sumSquared, K.epsilon()))
+	return K.sqrt(K.sum(K.square(featsA - featsB), axis=1, keepdims=True))
+
+
+def euclidean_distance_output_shape(shapes):
+  shape1, shape2 = shapes
+  return (shape1[0], 1)
+
+def contrastive_loss(y_true, y_pred):
+
+  margin = 1
+
+  loss = K.mean(y_true * K.square(y_pred) + (1 - y_true) * K.square(K.maximum(margin - y_pred, 0)))
+
+  return loss
+
+
+
 
 
 def image_read(path):
   image = cv2.imread(path, 0)
-  image = image.astype('float32')
-  image /= 255.0
-  image = cv2.resize(image, (120,120))
-  image = image.reshape(120,120,1)
+  image = cv2.resize(image, (img_w, img_h))
+  image = np.array(image, dtype= np.float64)
+  image /= 255
+  image = image.reshape(img_h, img_w, 1)
 
   return image
 
 
+training_dir =  '/content/drive/MyDrive/sign_data/train'
+training_csv = '/content/drive/MyDrive/sign_data/train_data.csv'
+test_csv = '/content/drive/MyDrive/sign_data/test_data.csv'
+test_dir = '/content/drive/MyDrive/sign_data/test'
 
-def siamese_datagen():
-    pairs = [np.zeros(( 2*len(images), 120, 120, 1)) for i in range(2)]
-    targets = np.array([1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0])
-    for i in range(2*len(images)):
-      print(2*len(images))
-      for j in range(len(classes)):
-        
-        real_forged = os.path.join(base, classes[j])
-        real_images = os.path.join(real_forged, 'real')
-        forged_images = os.path.join(real_forged, 'forged') 
+def siamese_datagen(training_dir, training_csv, batch_size = 16):
+    while True:
+      targets = np.zeros((batch_size,))
+      training_df = pd.read_csv(training_csv)
+      pairs = [np.zeros((batch_size, img_h, img_w, 1)) for i in range(2)]
+      p = 0
+      for i in range(0, len(training_df)):
+        image1_path = os.path.join(training_dir, training_df.iat[i, 0])
+        image2_path = os.path.join(training_dir, training_df.iat[i, 1])
 
-        for real in glob.glob(os.path.join(real_images, '*.png')):
+        img1 = image_read(image1_path)
+        img2 = image_read(image2_path)
 
-          img1 = image_read(real)
-          pairs[0][i,:,:,:]  = img1
+        pairs[0][p,:,:,:] = img1
+        pairs[1][p,:,:,:] = img2
 
-          random_img = glob.glob(os.path.join(real_images, '*.png'))
-          
-          path = secrets.choice(random_img)
-          img2 = image_read(path)
-          
-          pairs[1][i,:,:,:]  = img2
-          ##targets.append('1')
+        targets[p] = training_df.iat[i, 2]
 
-          random_forged_img = glob.glob(os.path.join(forged_images, '*.png'))
-          path2 = secrets.choice(random_forged_img)
-          
-          img2 = image_read(path2)
+        p += 1
 
-          pairs[0][i,:,:,:] = img1
-          pairs[1][i,:,:,:] = img2
-          
-          ##targets.append('0')
-          print('targets')
-          print(targets)
-
-
-
-
-    
-    
-    
+        if p == batch_size:
+          yield pairs, targets
+          p = 0
+          pairs = [np.zeros((batch_size, img_h, img_w, 1)) for i in range(2)]
+          targets = np.zeros((batch_size,))
  
   
-    print('targets')
-    print(targets)                        
-    return pairs, np.asarray(targets)
+                        
 
 
                  
 
-real_array = []
-print('haha')
-                  
-
-
 # training_data = siamese_datagen(real_images, forged_images, batch_size= 2)    
 
-
-(inputs, targets) = siamese_datagen()
-
+image_shape = (img_h, img_w, 1)
 
 featureExtractor = build_siamese_model(image_shape)
-imgA = Input(shape = image_shape)
-imgB = Input(shape = image_shape)
+imgA = Input(shape = (image_shape))
+imgB = Input(shape = (image_shape))
 featsA = featureExtractor(imgA)
 featsB = featureExtractor(imgB)
 
-distance = Lambda(euclidean_distance)([featsA, featsB])
-outputs = Dense(1, activation="sigmoid")(distance)
-model = Model(inputs=[imgA, imgB], outputs=outputs)
+distance = Lambda(euclidean_distance, output_shape = euclidean_distance_output_shape)([featsA, featsB])
 
-model.compile(loss="binary_crossentropy", optimizer="adam",
-	metrics=["accuracy"])
+model = Model(inputs=[imgA, imgB], outputs=distance)  
+
+batch_sz = 256
+training_samples = 23206
+validation_samples = 5748
+
+rms = RMSprop(lr=0.01, rho=0.9, epsilon=1e-08)
+model.compile(loss=contrastive_loss, optimizer=rms)
+
+
+callbacks = [
+    ReduceLROnPlateau(factor=0.1, patience=5, min_lr=0.000001, verbose=1),
+    ModelCheckpoint('/content/siamese_network.h5', verbose=1, save_weights_only=True)
+]
+
+
+
 # train the model
 print("[INFO] training model...")
-history = model.fit(
- 	inputs, targets,
- 	batch_size=32, 
- 	epochs=150)
-    
-        
+history = model.fit_generator(siamese_datagen(training_dir, training_csv, batch_sz),
+ 	 validation_data= siamese_datagen(test_dir, test_csv, batch_sz),
+   epochs=50,
+   steps_per_epoch = training_samples//batch_sz,
+   validation_steps = validation_samples // batch_sz,
+  callbacks = callbacks)
+
